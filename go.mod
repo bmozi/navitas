@@ -1,4 +1,4 @@
-module github.com/johnobriggs/navitas
+module github.com/bmozi/navitas
 
 go 1.22
 

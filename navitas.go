@@ -10,9 +10,9 @@ import (
 
 	"github.com/CloudyKit/jet/v6"
 	"github.com/alexedwards/scs/v2"
+	"github.com/bmozi/navitas/render"
+	"github.com/bmozi/navitas/session"
 	"github.com/go-chi/chi/v5"
-	"github.com/johnobriggs/navitas/render"
-	"github.com/johnobriggs/navitas/session"
 	"github.com/joho/godotenv"
 )
 
