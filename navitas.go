@@ -30,6 +30,7 @@ type Navitas struct {
 	Routes   *chi.Mux
 	Render   *render.Render
 	Session  *scs.SessionManager
+	DB       Database
 	JetViews *jet.Set
 	config   config
 }
@@ -39,6 +40,7 @@ type config struct {
 	renderer    string
 	cookie      cookieConfig
 	sessionType string
+	database    databaseConfig
 }
 
 // New reads the .env file, creates our application config, populates the Navitas type with settings
@@ -74,6 +76,18 @@ func (n *Navitas) New(rootPath string) error {
 	n.RootPath = rootPath
 	n.Routes = n.routes().(*chi.Mux)
 
+	// connect to database
+	if os.Getenv("DATABASE_TYPE") != "" {
+		db, err := n.OpenDB(os.Getenv("DATABASE_TYPE"), n.BuildDSN())
+		if err != nil {
+			errorLog.Println(err)
+			os.Exit(1)
+		}
+		n.DB = Database{
+			DatabaseType: os.Getenv("DATABASE_TYPE"),
+			Pool:         db,
+		}
+	}
 	n.config = config{
 		port:     os.Getenv("PORT"),
 		renderer: os.Getenv("RENDERER"),
@@ -85,6 +99,10 @@ func (n *Navitas) New(rootPath string) error {
 			domain:   os.Getenv("COOKIE_DOMAIN"),
 		},
 		sessionType: os.Getenv("SESSION_TYPE"),
+		database: databaseConfig{
+			database: os.Getenv("DATABASE_TYPE"),
+			dsn:      n.BuildDSN(),
+		},
 	}
 
 	// create session
@@ -161,4 +179,30 @@ func (n *Navitas) createRenderer() {
 		JetViews: n.JetViews,
 	}
 	n.Render = &myRenderer
+}
+
+// BuildDSN builds the datasource name for our database, and returns it as a string
+func (n *Navitas) BuildDSN() string {
+	var dsn string
+
+	switch os.Getenv("DATABASE_TYPE") {
+	case "postgres", "postgresql":
+		dsn = fmt.Sprintf("host=%s port=%s user=%s dbname=%s sslmode=%s timezone=UTC connect_timeout=5",
+			os.Getenv("DATABASE_HOST"),
+			os.Getenv("DATABASE_PORT"),
+			os.Getenv("DATABASE_USER"),
+			os.Getenv("DATABASE_NAME"),
+			os.Getenv("DATABASE_SSL_MODE"))
+
+		// we check to see if a database passsword has been supplied, since including "password=" with nothing
+		// after it sometimes causes postgres to fail to allow a connection.
+		if os.Getenv("DATABASE_PASS") != "" {
+			dsn = fmt.Sprintf("%s password=%s", dsn, os.Getenv("DATABASE_PASS"))
+		}
+
+	default:
+
+	}
+
+	return dsn
 }
