@@ -6,33 +6,56 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/CloudyKit/jet/v6"
 	"github.com/alexedwards/scs/v2"
+	"github.com/bmozi/navitas/cache"
+	"github.com/bmozi/navitas/mailer"
 	"github.com/bmozi/navitas/render"
 	"github.com/bmozi/navitas/session"
+	"github.com/dgraph-io/badger/v3"
 	"github.com/go-chi/chi/v5"
+	"github.com/gomodule/redigo/redis"
 	"github.com/joho/godotenv"
+	"github.com/robfig/cron/v3"
 )
 
 const version = "1.0.0"
 
+var myRedisCache *cache.RedisCache
+var myBadgerCache *cache.BadgerCache
+var redisPool *redis.Pool
+var badgerConn *badger.DB
+
 // Navitas is the overall type for the Navitas package. Members that are exported in this type
 // are available to any application that uses it.
 type Navitas struct {
-	AppName  string
-	Debug    bool
-	Version  string
-	ErrorLog *log.Logger
-	InfoLog  *log.Logger
-	RootPath string
-	Routes   *chi.Mux
-	Render   *render.Render
-	Session  *scs.SessionManager
-	DB       Database
-	JetViews *jet.Set
-	config   config
+	AppName       string
+	Debug         bool
+	Version       string
+	ErrorLog      *log.Logger
+	InfoLog       *log.Logger
+	RootPath      string
+	Routes        *chi.Mux
+	Render        *render.Render
+	Session       *scs.SessionManager
+	DB            Database
+	JetViews      *jet.Set
+	config        config
+	EncryptionKey string
+	Cache         cache.Cache
+	Scheduler     *cron.Cron
+	Mail          mailer.Mail
+	Server        Server
+}
+
+type Server struct {
+	ServerName string
+	Port       string
+	Secure     bool
+	URL        string
 }
 
 type config struct {
@@ -41,6 +64,7 @@ type config struct {
 	cookie      cookieConfig
 	sessionType string
 	database    databaseConfig
+	redis       redisConfig
 }
 
 // New reads the .env file, creates our application config, populates the Navitas type with settings
@@ -48,7 +72,7 @@ type config struct {
 func (n *Navitas) New(rootPath string) error {
 	pathConfig := initPaths{
 		rootPath:    rootPath,
-		folderNames: []string{"handlers", "migrations", "views", "data", "public", "tmp", "logs", "middleware"},
+		folderNames: []string{"handlers", "migrations", "views", "mail", "data", "public", "tmp", "logs", "middleware"},
 	}
 
 	err := n.Init(pathConfig)
@@ -71,6 +95,7 @@ func (n *Navitas) New(rootPath string) error {
 	infoLog, errorLog := n.startLoggers()
 	n.InfoLog = infoLog
 	n.ErrorLog = errorLog
+
 	n.Debug, _ = strconv.ParseBool(os.Getenv("DEBUG"))
 	n.Version = version
 	n.RootPath = rootPath
@@ -88,6 +113,29 @@ func (n *Navitas) New(rootPath string) error {
 			Pool:         db,
 		}
 	}
+
+	scheduler := cron.New()
+	n.Scheduler = scheduler
+
+	if os.Getenv("CACHE") == "redis" || os.Getenv("SESSION_TYPE") == "redis" {
+		myRedisCache = n.createClientRedisCache()
+		n.Cache = myRedisCache
+		redisPool = myRedisCache.Conn
+	}
+
+	if os.Getenv("CACHE") == "badger" {
+		myBadgerCache = n.createClientBadgerCache()
+		n.Cache = myBadgerCache
+		badgerConn = myBadgerCache.Conn
+
+		_, err = n.Scheduler.AddFunc("@daily", func() {
+			_ = myBadgerCache.Conn.RunValueLogGC(0.7)
+		})
+		if err != nil {
+			return err
+		}
+	}
+
 	n.config = config{
 		port:     os.Getenv("PORT"),
 		renderer: os.Getenv("RENDERER"),
@@ -103,6 +151,23 @@ func (n *Navitas) New(rootPath string) error {
 			database: os.Getenv("DATABASE_TYPE"),
 			dsn:      n.BuildDSN(),
 		},
+		redis: redisConfig{
+			host:     os.Getenv("REDIS_HOST"),
+			password: os.Getenv("REDIS_PASSWORD"),
+			prefix:   os.Getenv("REDIS_PREFIX"),
+		},
+	}
+
+	secure := true
+	if strings.ToLower(os.Getenv("SECURE")) == "false" {
+		secure = false
+	}
+
+	n.Server = Server{
+		ServerName: os.Getenv("SERVER_NAME"),
+		Port:       os.Getenv("PORT"),
+		Secure:     secure,
+		URL:        os.Getenv("APP_URL"),
 	}
 
 	// create session
@@ -113,15 +178,33 @@ func (n *Navitas) New(rootPath string) error {
 		SessionType:    n.config.sessionType,
 		CookieDomain:   n.config.cookie.domain,
 	}
-	n.Session = sess.InitSession()
 
-	var views = jet.NewSet(
-		jet.NewOSFileSystemLoader(fmt.Sprintf("%s/views", rootPath)),
-		jet.InDevelopmentMode(),
-	)
-	n.JetViews = views
+	switch n.config.sessionType {
+	case "redis":
+		sess.RedisPool = myRedisCache.Conn
+	case "mysql", "postgres", "mariadb", "postgresql":
+		sess.DBPool = n.DB.Pool
+	}
+
+	n.Session = sess.InitSession()
+	n.EncryptionKey = os.Getenv("KEY")
+
+	if n.Debug {
+		var views = jet.NewSet(
+			jet.NewOSFileSystemLoader(fmt.Sprintf("%s/views", rootPath)),
+			jet.InDevelopmentMode(),
+		)
+		n.JetViews = views
+	} else {
+		var views = jet.NewSet(
+			jet.NewOSFileSystemLoader(fmt.Sprintf("%s/views", rootPath)),
+		)
+		n.JetViews = views
+	}
 
 	n.createRenderer()
+	go n.Mail.ListenForMail()
+
 	return nil
 }
 
@@ -146,6 +229,18 @@ func (n *Navitas) ListenAndServe() {
 		IdleTimeout:  30 * time.Second,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 600 * time.Second,
+	}
+
+	if n.DB.Pool != nil {
+		defer n.DB.Pool.Close()
+	}
+
+	if redisPool != nil {
+		defer redisPool.Close()
+	}
+
+	if badgerConn != nil {
+		defer badgerConn.Close()
 	}
 
 	n.InfoLog.Printf("Listening on port %s", os.Getenv("PORT"))
@@ -179,6 +274,68 @@ func (n *Navitas) createRenderer() {
 		JetViews: n.JetViews,
 	}
 	n.Render = &myRenderer
+}
+
+func (n *Navitas) createMailer() mailer.Mail {
+	port, _ := strconv.Atoi(os.Getenv("SMTP_PORT"))
+	m := mailer.Mail{
+		Domain:      os.Getenv("MAIL_DOMAIN"),
+		Templates:   n.RootPath + "/mail",
+		Host:        os.Getenv("SMTP_HOST"),
+		Port:        port,
+		Username:    os.Getenv("SMTP_USERNAME"),
+		Password:    os.Getenv("SMTP_PASSWORD"),
+		Encryption:  os.Getenv("SMTP_ENCRYPTION"),
+		FromName:    os.Getenv("FROM_NAME"),
+		FromAddress: os.Getenv("FROM_ADDRESS"),
+		Jobs:        make(chan mailer.Message, 20),
+		Results:     make(chan mailer.Result, 20),
+		API:         os.Getenv("MAILER_API"),
+		APIKey:      os.Getenv("MAILER_KEY"),
+		APIUrl:      os.Getenv("MAILER_URL"),
+	}
+	return m
+}
+
+func (n *Navitas) createClientRedisCache() *cache.RedisCache {
+	cacheClient := cache.RedisCache{
+		Conn:   n.createRedisPool(),
+		Prefix: n.config.redis.prefix,
+	}
+	return &cacheClient
+}
+
+func (n *Navitas) createClientBadgerCache() *cache.BadgerCache {
+	cacheClient := cache.BadgerCache{
+		Conn: n.createBadgerConn(),
+	}
+	return &cacheClient
+}
+
+func (n *Navitas) createRedisPool() *redis.Pool {
+	return &redis.Pool{
+		MaxIdle:     50,
+		MaxActive:   10000,
+		IdleTimeout: 240 * time.Second,
+		Dial: func() (redis.Conn, error) {
+			return redis.Dial("tcp",
+				n.config.redis.host,
+				redis.DialPassword(n.config.redis.password))
+		},
+
+		TestOnBorrow: func(conn redis.Conn, t time.Time) error {
+			_, err := conn.Do("PING")
+			return err
+		},
+	}
+}
+
+func (n *Navitas) createBadgerConn() *badger.DB {
+	db, err := badger.Open(badger.DefaultOptions(n.RootPath + "/tmp/badger"))
+	if err != nil {
+		return nil
+	}
+	return db
 }
 
 // BuildDSN builds the datasource name for our database, and returns it as a string

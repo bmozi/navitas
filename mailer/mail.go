@@ -8,11 +8,13 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	apimail "github.com/ainsleyclark/go-mail"
 	"github.com/sendgrid/sendgrid-go"
 	"github.com/sendgrid/sendgrid-go/helpers/mail"
 	"github.com/vanng822/go-premailer/premailer"
+	simple_mail "github.com/xhit/go-simple-mail/v2"
 )
 
 // Mail holds the information necessary to connect to an SMTP server
@@ -86,31 +88,6 @@ func (m *Mail) ChooseAPI(msg Message) error {
 	}
 }
 
-func (m *Mail) SendUsingSendGrid(msg Message) error {
-
-	// formattedMessage, err := m.buildHTMLMessage(msg)
-	// if err != nil {
-	// 	return err
-	// }
-
-	from := mail.NewEmail("Example User", "test@example.com")
-	subject := "Sending with SendGrid is Fun"
-	to := mail.NewEmail("Example User", "test@example.com")
-	plainTextContent := "and easy to do anywhere, even with Go"
-	htmlContent := "<strong>and easy to do anywhere, even with Go</strong>"
-	message := mail.NewSingleEmail(from, subject, to, plainTextContent, htmlContent)
-	client := sendgrid.NewSendClient(os.Getenv("SENDGRID_API_KEY"))
-	response, err := client.Send(message)
-	if err != nil {
-		log.Println(err)
-	} else {
-		fmt.Println(response.StatusCode)
-		fmt.Println(response.Body)
-		fmt.Println(response.Headers)
-	}
-	return nil
-}
-
 func (m *Mail) SendUsingAPI(msg Message, transport string) error {
 	if msg.From == "" {
 		msg.From = m.FromAddress
@@ -162,6 +139,25 @@ func (m *Mail) SendUsingAPI(msg Message, transport string) error {
 	return nil
 }
 
+func (m *Mail) SendUsingSendGrid(msg Message) error {
+	from := mail.NewEmail("Example User", "test@example.com")
+	subject := "Sending with SendGrid is Fun"
+	to := mail.NewEmail("Example User", "test@example.com")
+	plainTextContent := "and easy to do anywhere, even with Go"
+	htmlContent := "<strong>and easy to do anywhere, even with Go</strong>"
+	message := mail.NewSingleEmail(from, subject, to, plainTextContent, htmlContent)
+	client := sendgrid.NewSendClient(os.Getenv("SENDGRID_API_KEY"))
+	response, err := client.Send(message)
+	if err != nil {
+		log.Println(err)
+	} else {
+		fmt.Println(response.StatusCode)
+		fmt.Println(response.Body)
+		fmt.Println(response.Headers)
+	}
+	return nil
+}
+
 func (m *Mail) addAPIAttachments(msg Message, tx *apimail.Transmission) error {
 	if len(msg.Attachments) > 0 {
 		var attachments []apimail.Attachment
@@ -187,64 +183,64 @@ func (m *Mail) addAPIAttachments(msg Message, tx *apimail.Transmission) error {
 
 // SendSMTPMessage builds and sends an email message using SMTP. This is called by ListenForMail,
 // and can also be called directly when necessary
-// func (m *Mail) SendSMTPMessage(msg Message) error {
-// 	formattedMessage, err := m.buildHTMLMessage(msg)
-// 	if err != nil {
-// 		return err
-// 	}
-//
-// 	plainMessage, err := m.buildPlainTextMessage(msg)
-// 	if err != nil {
-// 		return err
-// 	}
-//
-// 	server := mail.NewSMTPClient()
-// 	server.Host = m.Host
-// 	server.Port = m.Port
-// 	server.Username = m.Username
-// 	server.Password = m.Password
-// 	server.Encryption = m.getEncryption(m.Encryption)
-// 	server.KeepAlive = false
-// 	server.ConnectTimeout = 10 * time.Second
-// 	server.SendTimeout = 10 * time.Second
-//
-// 	smtpClient, err := server.Connect()
-// 	if err != nil {
-// 		return err
-// 	}
-//
-// 	email := mail.NewMSG()
-// 	email.SetFrom(msg.From).
-// 		AddTo(msg.To).
-// 		SetSubject(msg.Subject)
-// 	email.SetBody(mail.TextHTML, formattedMessage)
-// 	email.AddAlternative(mail.TextPlain, plainMessage)
-//
-// 	if len(msg.Attachments) > 0 {
-// 		for _, x := range msg.Attachments {
-// 			email.AddAttachment(x)
-// 		}
-// 	}
-// 	err = email.Send(smtpClient)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	return nil
-// }
+func (m *Mail) SendSMTPMessage(msg Message) error {
+	formattedMessage, err := m.buildHTMLMessage(msg)
+	if err != nil {
+		return err
+	}
+
+	plainMessage, err := m.buildPlainTextMessage(msg)
+	if err != nil {
+		return err
+	}
+
+	server := simple_mail.NewSMTPClient()
+	server.Host = m.Host
+	server.Port = m.Port
+	server.Username = m.Username
+	server.Password = m.Password
+	server.Encryption = m.getEncryption(m.Encryption)
+	server.KeepAlive = false
+	server.ConnectTimeout = 10 * time.Second
+	server.SendTimeout = 10 * time.Second
+
+	smtpClient, err := server.Connect()
+	if err != nil {
+		return err
+	}
+
+	email := simple_mail.NewMSG()
+	email.SetFrom(msg.From).
+		AddTo(msg.To).
+		SetSubject(msg.Subject)
+	email.SetBody(simple_mail.TextHTML, formattedMessage)
+	email.AddAlternative(simple_mail.TextPlain, plainMessage)
+
+	if len(msg.Attachments) > 0 {
+		for _, x := range msg.Attachments {
+			email.AddAttachment(x)
+		}
+	}
+	err = email.Send(smtpClient)
+	if err != nil {
+		return err
+	}
+	return nil
+}
 
 // getEncryption returns the appropriate encryption type based on a string value
-// func (m *Mail) getEncryption(e string) mail.Encryption {
-// 	switch e {
-// 	case "tls":
-// 		return mail.EncryptionSTARTTLS
-// 	case "ssl":
-// 		return mail.EncryptionSSL
-// 	case "none":
-// 		return mail.EncryptionNone
-// 	default:
-// 		return mail.EncryptionSTARTTLS
-// 	}
-// }
+func (m *Mail) getEncryption(e string) simple_mail.Encryption {
+	switch e {
+	case "tls":
+		return simple_mail.EncryptionSTARTTLS
+	case "ssl":
+		return simple_mail.EncryptionSSL
+	case "none":
+		return simple_mail.EncryptionNone
+	default:
+		return simple_mail.EncryptionSTARTTLS
+	}
+}
 
 // buildHTMLMessage creates the html version of the message
 func (m *Mail) buildHTMLMessage(msg Message) (string, error) {
