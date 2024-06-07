@@ -16,6 +16,6 @@ func (n *Navitas) routes() http.Handler {
 	}
 	mux.Use(middleware.Recoverer)
 	mux.Use(n.SessionLoad)
-
+	mux.Use(n.NoSurf)
 	return mux
 }
