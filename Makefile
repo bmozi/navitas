@@ -13,3 +13,10 @@ coverage:
 ## build_cli: builds the command line tool navitas and copies it to myapp
 build_cli:
 	@go build -o ../myapp/navitas ./cmd/cli
+
+## build: builds the command line tool dist directory
+build:
+	@go build -o ./dist/navitas ./cmd/cli
+
+install_cli:
+	@go build -o ~/go/bin/navitas -ldflags '-s -w' ./cmd/cli
