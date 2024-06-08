@@ -30,7 +30,7 @@ func doNew(appName string) {
 	// git clone the skeleton application
 	color.Green("\tCloning repository...")
 	_, err := git.PlainClone("./"+appName, false, &git.CloneOptions{
-		URL:      "git@github.com/bmozi/navitas-app.git",
+		URL:      "git@github.com:bmozi/navitas-app.git",
 		Progress: os.Stdout,
 		Depth:    1,
 	})

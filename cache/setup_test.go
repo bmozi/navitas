@@ -31,7 +31,7 @@ func TestMain(m *testing.M) {
 	}
 
 	testRedisCache.Conn = &pool
-	testRedisCache.Prefix = "test-celeritas"
+	testRedisCache.Prefix = "test-navitas"
 
 	defer testRedisCache.Conn.Close()
 
